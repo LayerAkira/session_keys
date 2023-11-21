@@ -1,7 +1,6 @@
 use array::Array;
-use starknet::{
-    ContractAddress, SyscallResult, storage_access::StorageAddress, class_hash::ClassHash
-};
+use starknet::{ContractAddress, SyscallResult, storage_access::StorageAddress, class_hash::ClassHash};
+use poseidon::poseidon_hash_span;
 
 #[derive(Copy, Drop, Serde, starknet::Store, PartialEq)]
 struct Timestamp {
@@ -13,25 +12,49 @@ struct Timestamp {
 #[derive(Copy, Drop, Serde, starknet::Store, PartialEq)]
 struct GeneralPolicy {
     contract_address: ContractAddress, // which contract dapp allowed to call
-    selector: felt252, // whoch method allowed to be called by dapp of specified contract
+    selector: felt252, // which method allowed to be called by dapp of specified contract
     max_calls_allowed: u32 // how many calls allowed to be performed on behalf of user for this method of contracct
 }
 
+// TODO:Maybe allow wildcard selector and contract?
 #[derive(Drop, Serde, PartialEq)]
 struct DappSession {
     invoker: ContractAddress, // dapp invoker that can execute txs on behalf of the user
     valid_from: Timestamp, // from what timestamp this session is valid 
     valid_to: Timestamp, // to what timestamp this session is valid
-    policies: Span<GeneralPolicy> // what policies user allow to grant
+    request_expiry:Timestamp, // when this dapp request for issue session will expire
+    policies: Span<GeneralPolicy>, // what policies user allow to grant
 }
 
+trait PoseidonHash<T> {
+    fn get_poseidon_hash(self: @T) -> felt252;
+}
+
+impl PoseidonHashImpl<T, impl TSerde: Serde<T>, impl TDestruct: Destruct<T>> of PoseidonHash<T> {
+    fn get_poseidon_hash(self: @T) -> felt252 {
+        let mut serialized: Array<felt252> = ArrayTrait::new();
+        Serde::<T>::serialize(self, ref serialized);
+        let hashed_key: felt252 = poseidon_hash_span(serialized.span());
+        hashed_key
+    }
+}
+
+fn check_sign(account: ContractAddress, hash: felt252, sign: (felt252, felt252)) { //TODO maybe just edsca check?
+    let selector = 0x028420862938116cb3bbdbedee07451ccc54d4e9412dbef71142ad1980a30941; // is_valid_signature
+    let (x, y) = sign;
+    let mut calldata = ArrayTrait::new();
+    calldata.append(hash);
+    calldata.append(2);
+    calldata.append(x);
+    calldata.append(y);
+    let mut res = starknet::call_contract_syscall(account, selector, calldata.span());
+}
 
 #[starknet::interface]
 trait IDappSessionHandler<TContractState> {
     // Grants persmissions for dapp to execute txs on behalf of user wrt to constraints, can be executed by user itself only
-    // TODO:Maybe allow to dapp to push it by himself avoding user spent gas?
-    // TODO:Maybe allow wildcard selector and contract?
-    fn grant_permissions(ref self: TContractState, session: DappSession); // only called by user
+    // only called by user else validate signature if, // called by session dapp invoker to avoid gas spending by user 
+    fn grant_permissions(ref self: TContractState, session: DappSession, signature:(felt252,felt252)); 
     
     //  Revoke specified permissions of the dapp, can be executed either by the user itself or by the dapp in case it got compromised
     fn revoke_permissions(ref self: TContractState, session: DappSession);
@@ -39,7 +62,7 @@ trait IDappSessionHandler<TContractState> {
     //Revoke all access for particual dapp caller, only can be invoked by user itself
     fn revoke_all(ref self: TContractState, dapp_caller: ContractAddress); 
     
-    // Return if particula policy is currently active and call can be executed by dapp_representetive
+    // Return if particulal policy is currently active and call can be executed by dapp_representetive
     fn is_policy_active(self: @TContractState, dapp_representetive: ContractAddress, call_address: ContractAddress, selector: felt252) -> bool;
 
     // Executes call wrt to constraints specified
@@ -54,8 +77,8 @@ mod dapp_session_handler_component {
     use starknet::{ call_contract_syscall, ContractAddress, get_caller_address, get_block_info, get_contract_address, SyscallResult, storage_access::StorageAddress, class_hash::ClassHash};
     use core::{traits::TryInto, traits::Into, box::BoxTrait};
     use starknet::account::Call;
-    use super::{IDappSessionHandler, Timestamp, DappSession,GeneralPolicy};
-
+    use super::{IDappSessionHandler, Timestamp, DappSession,GeneralPolicy,PoseidonHashImpl};
+    
     #[event]
     #[derive(Drop, starknet::Event)]
     enum Event {
@@ -101,34 +124,17 @@ mod dapp_session_handler_component {
     }
 
     #[embeddable_as(DappSessionHandlerable)]
-    impl DappSessionHandlerableImpl<
-        TContractState, +HasComponent<TContractState>
-    > of IDappSessionHandler<ComponentState<TContractState>> {
-        fn grant_permissions(ref self: ComponentState<TContractState>, session: DappSession) {
-            assert(get_contract_address() == get_caller_address(), 'Only self');
-            let mut idx = 0;
-            let mut constraint = CallConstraint {
-                valid_from: session.valid_from,
-                valid_to: session.valid_to,
-                user_nonce: self.dapp_nonce.read(session.invoker),
-                calls_remains: 0
-            };
-            loop {
-                let item = *session.policies.at(idx);
-                constraint.calls_remains = item.max_calls_allowed;
-                self._set_constraint(session.invoker, item.contract_address, item.selector, constraint);
-                idx += 1;
-                if idx == session.policies.len() {  break; }
-            };
-            self.emit(PermissionGranted {
-                        dapp_invoker: session.invoker,
-                        valid_to: session.valid_to,
-                        valid_from: session.valid_from,
-                        policies: session.policies
-                    }
-            );
+    impl DappSessionHandlerableImpl<TContractState, +HasComponent<TContractState>> of IDappSessionHandler<ComponentState<TContractState>> {
+        fn grant_permissions(ref self: ComponentState<TContractState>, session: DappSession, signature:(felt252,felt252)) {
+            let caller:ContractAddress = get_caller_address();
+            if get_contract_address() == caller  {
+                self._grant_permissions(session);
+                return;
+            }
+            let hash = session.get_poseidon_hash();
+            super::check_sign(get_contract_address(), hash, signature); // TODO should we assert here?   
+            self._grant_permissions(session);
         }
-
 
         fn revoke_permissions(ref self: ComponentState<TContractState>, session: DappSession) {
             let mut idx = 0;
@@ -144,7 +150,6 @@ mod dapp_session_handler_component {
             };
             self.emit(PermissionRevoked { dapp_invoker: session.invoker, policies: session.policies});
         }
-
 
         fn is_policy_active(self: @ComponentState<TContractState>, dapp_representetive: ContractAddress, call_address: ContractAddress, selector: felt252) -> bool {
             let constraint = self._get_constraint(dapp_representetive, call_address, selector);
@@ -187,6 +192,36 @@ mod dapp_session_handler_component {
 
             return true;
         }
+
+        fn _grant_permissions(ref self: ComponentState<TContractState>, session: DappSession) {            
+            let cur_ts = self.get_timestamp();
+            assert(session.request_expiry.block_number <= cur_ts.block_number && session.request_expiry.block_time <= cur_ts.block_number, 'Request expired');
+
+            let mut idx = 0;
+            let mut constraint = CallConstraint {
+                valid_from: session.valid_from,
+                valid_to: session.valid_to,
+                user_nonce: self.dapp_nonce.read(session.invoker),
+                calls_remains: 0
+            };
+            
+            loop {
+                let item = *session.policies.at(idx);
+                constraint.calls_remains = item.max_calls_allowed;
+                self._set_constraint(session.invoker, item.contract_address, item.selector, constraint);
+                idx += 1;
+                if idx == session.policies.len() {  break; }
+            };
+            self.emit(PermissionGranted {
+                        dapp_invoker: session.invoker,
+                        valid_to: session.valid_to,
+                        valid_from: session.valid_from,
+                        policies: session.policies
+                    }
+            );
+        }
+
+        
 
         fn _get_constraint(self: @ComponentState<TContractState>, dapp_representetive: super::ContractAddress, call_address: ContractAddress, selector: felt252) -> CallConstraint {
             let constraint: CallConstraint = self.dapp_permission_to_constraint.read((dapp_representetive, call_address, selector));
