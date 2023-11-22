@@ -66,13 +66,15 @@ trait IDappSessionHandler<TContractState> {
     fn is_policy_active(self: @TContractState, dapp_representetive: ContractAddress, call_address: ContractAddress, selector: felt252) -> bool;
 
     // Executes call wrt to constraints specified
-    fn execute_dapp_call(ref self: TContractState, contract: ContractAddress, selector: felt252, calldata: Span<felt252>) -> SyscallResult<Span<felt252>>;
-}
+    fn execute_dapp_call(ref self: TContractState, contract: ContractAddress, selector: felt252, calldata: Span<felt252>) -> Span<felt252>;
 
+    fn execute_dapp_calls(ref self: TContractState, calls: Span<(ContractAddress, felt252, Span<felt252>)>) -> Array<Span<felt252>>;
+}
 
 #[starknet::component]
 mod dapp_session_handler_component {
-    use core::option::OptionTrait;
+    use core::result::ResultTrait;
+use core::option::OptionTrait;
     use core::array::ArrayTrait;
     use starknet::{ call_contract_syscall, ContractAddress, get_caller_address, get_block_info, get_contract_address, SyscallResult, storage_access::StorageAddress, class_hash::ClassHash};
     use core::{traits::TryInto, traits::Into, box::BoxTrait};
@@ -120,7 +122,7 @@ mod dapp_session_handler_component {
     #[storage]
     struct Storage {
         dapp_permission_to_constraint: LegacyMap::<(ContractAddress, ContractAddress, felt252), CallConstraint>,
-        dapp_nonce: LegacyMap::<ContractAddress, u32>,
+        dapp_nonce: LegacyMap::<ContractAddress, u32>, // cause we increment by 2**32 suffice
     }
 
     #[embeddable_as(DappSessionHandlerable)]
@@ -163,15 +165,23 @@ mod dapp_session_handler_component {
             self.emit(AllPermissionsRevoked { dapp_invoker: dapp_caller});
         }
 
-        fn execute_dapp_call(ref self: ComponentState<TContractState>, contract: ContractAddress, selector: felt252, calldata: Span<felt252>) -> SyscallResult<Span<felt252>> {
+        fn execute_dapp_call(ref self: ComponentState<TContractState>, contract: ContractAddress, selector: felt252, calldata: Span<felt252>) -> Span<felt252> {
             let caller = get_caller_address();
-            let mut constraint = self._get_constraint(caller, contract, selector);
-            assert(self._is_active(constraint, caller), 'Not active session');
+            return self._execute_dapp_call(caller, contract, selector, calldata);
+        }
 
-            constraint.calls_remains = constraint.calls_remains - 1;
-            self._set_constraint(caller, contract, selector, constraint);
-
-            return call_contract_syscall(contract, selector, calldata);
+        fn execute_dapp_calls(ref self: ComponentState<TContractState>, calls: Span<(ContractAddress, felt252, Span<felt252>)>) -> Array<Span<felt252>>{
+            let mut res:Array<Span<felt252>> = ArrayTrait::new();
+            let mut idx = 0;
+            let caller = get_caller_address();
+            let size = calls.len();
+            loop {
+                if (idx == size) {break;}
+                let (contract, selector, calldata) = *calls.at(idx);
+                res.append(self._execute_dapp_call(caller,contract,selector,calldata));
+                idx += 1;
+            };
+            res
         }
     }
 
@@ -240,5 +250,15 @@ mod dapp_session_handler_component {
             let info = get_block_info().unbox();
             return Timestamp { block_number: info.block_number, block_time: info.block_timestamp };
         }
+
+        fn _execute_dapp_call(ref self: ComponentState<TContractState>, caller:ContractAddress, contract: ContractAddress, selector: felt252, calldata: Span<felt252>) -> Span<felt252> {
+            let mut constraint = self._get_constraint(caller, contract, selector);
+            assert(self._is_active(constraint, caller), 'Not active session');
+            constraint.calls_remains = constraint.calls_remains - 1;
+            self._set_constraint(caller, contract, selector, constraint);
+            return call_contract_syscall(contract, selector, calldata).unwrap();
+        }
+
     }
 }
+
