@@ -113,14 +113,14 @@ mod dapp_session_handler_component {
     struct CallConstraint {
         valid_from: super::Timestamp,
         valid_to: super::Timestamp,
-        user_nonce: u256,
+        user_nonce: u32,
         calls_remains: u32
     }
 
     #[storage]
     struct Storage {
         dapp_permission_to_constraint: LegacyMap::<(ContractAddress, ContractAddress, felt252), CallConstraint>,
-        dapp_nonce: LegacyMap::<ContractAddress, u256>,
+        dapp_nonce: LegacyMap::<ContractAddress, u32>,
     }
 
     #[embeddable_as(DappSessionHandlerable)]
@@ -222,7 +222,6 @@ mod dapp_session_handler_component {
         }
 
         
-
         fn _get_constraint(self: @ComponentState<TContractState>, dapp_representetive: super::ContractAddress, call_address: ContractAddress, selector: felt252) -> CallConstraint {
             let constraint: CallConstraint = self.dapp_permission_to_constraint.read((dapp_representetive, call_address, selector));
             return constraint;
