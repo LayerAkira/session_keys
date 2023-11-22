@@ -1,8 +1,10 @@
 import asyncio
 from pathlib import Path
 
+from starknet_py.hash.address import compute_address
 from starknet_py.hash.casm_class_hash import compute_casm_class_hash
 from starknet_py.net.account.account import Account
+from starknet_py.net.full_node_client import FullNodeClient
 from starknet_py.net.gateway_client import GatewayClient
 from starknet_py.net.models.chains import StarknetChainId
 from starknet_py.net.schemas.gateway import CasmClassSchema
@@ -61,13 +63,66 @@ async def deploy(contract_name, raw_calldata, net_type):
             return int(s, 16)
 
 
+async def deploy_acc(contract_name, private_key, salt):
+    try:
+        key_pair = KeyPair.from_private_key(private_key)
+
+        node_url = "https://starknet-testnet.public.blastapi.io/"
+        client = FullNodeClient(node_url=node_url)
+        chain = StarknetChainId.TESTNET
+
+        class_hash = await client.get_class_hash_at("0x06f464f321465fa8e3dd7e7e1469ee4498d32f5a5f72cc30a9acfeff2c0e4ccc")
+
+        address = compute_address(
+                salt=salt,
+                class_hash=class_hash,  # class_hash of the Account declared on the Starknet
+                constructor_calldata=[key_pair.public_key],
+                deployer_address=0,
+        )
+        print(f"address_aa {hex(address)}")
+
+        account_deployment_result = await Account.deploy_account(
+                address=address,
+                class_hash=class_hash,
+                salt=salt,
+                key_pair=key_pair,
+                client=client,
+                chain=chain,
+                constructor_calldata=[key_pair.public_key],
+                max_fee=int(1e15),
+        )
+        # Wait for deployment transaction to be accepted
+        await account_deployment_result.wait_for_acceptance()
+
+        # From now on, account can be used as usual
+        account = account_deployment_result.account
+
+        print(f"acc address: {hex(address)}")
+        file_path = f"./{contract_name}"
+        with open(file_path, 'w') as file:
+            file.write(hex(address))
+        return int(hex(address), 16)
+    except Exception as e:
+        print(f"{e}")
+        file_path = f"{contract_name}"
+        with open(file_path, 'r') as file:
+            s = file.read()
+            print(s)
+            return int(s, 16)
+
 
 async def main():
-    contract_name = "account"
+    # contract_name = "account"
+    # # 0x166db0a0758b72c6c89bf5ac6942aeaa0ee281eaae34f06bee74ce29ae4cd36
+    # raw_calldata = [0x452e2e03cde837c53678db13d88a22833f0175090fb9589d1dc658b3e73c603]
+    # net_type = "testnet"
+    # res = await deploy(contract_name, raw_calldata, net_type)
+
+    contract_name = "Account"
     # 0x166db0a0758b72c6c89bf5ac6942aeaa0ee281eaae34f06bee74ce29ae4cd36
     raw_calldata = [0x452e2e03cde837c53678db13d88a22833f0175090fb9589d1dc658b3e73c603]
     net_type = "testnet"
-    res = await deploy(contract_name, raw_calldata, net_type)
+    res = await deploy_acc(contract_name, "0x123", 0x123)
 
 
 async def run():
