@@ -189,13 +189,19 @@ use core::option::OptionTrait;
     #[generate_trait]
     impl InternalImpl<TContractState, +HasComponent<TContractState>> of InternalTrait<TContractState> {
         fn _is_active(self: @ComponentState<TContractState>, constraint: CallConstraint, dapp_caller: ContractAddress) -> bool {
+            //assert(!(constraint.user_nonce < self.dapp_nonce.read(dapp_caller)), 'nonce');
             if constraint.user_nonce < self.dapp_nonce.read(dapp_caller) { return false;}
+            //assert(!(constraint.calls_remains == 0), 'calls_remains');
             if constraint.calls_remains == 0 { return false;}
 
             let cur_stamp = self.get_timestamp();
+            //assert(!(cur_stamp.block_number < constraint.valid_from.block_number || cur_stamp.block_time < constraint.valid_from.block_time),
+            // 'valid_from');
             if cur_stamp.block_number < constraint.valid_from.block_number || cur_stamp.block_time < constraint.valid_from.block_time {
                 return false;
             }
+            //assert(!(cur_stamp.block_number > constraint.valid_to.block_number || cur_stamp.block_time > constraint.valid_to.block_time),
+            // 'valid_to');
             if cur_stamp.block_number > constraint.valid_to.block_number || cur_stamp.block_time > constraint.valid_to.block_time {
                 return false;
             }
@@ -205,7 +211,7 @@ use core::option::OptionTrait;
 
         fn _grant_permissions(ref self: ComponentState<TContractState>, session: DappSession) {            
             let cur_ts = self.get_timestamp();
-            assert(session.request_expiry.block_number <= cur_ts.block_number && session.request_expiry.block_time <= cur_ts.block_number, 'Request expired');
+            assert(session.request_expiry.block_number >= cur_ts.block_number && session.request_expiry.block_time >= cur_ts.block_time, 'Request expired');
 
             let mut idx = 0;
             let mut constraint = CallConstraint {

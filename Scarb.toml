@@ -18,4 +18,4 @@ snforge_std = { git = "https://github.com/foundry-rs/starknet-foundry.git", tag 
 [[tool.snforge.fork]]
 name = "latest"
 url = "https://starknet-testnet.public.blastapi.io"
-block_id.number = "391001"
+block_id.number = "907229"
